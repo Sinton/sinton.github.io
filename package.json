@@ -1,0 +1,18 @@
+{
+  "name": "sinton.github.io",
+  "version": "1.0.0",
+  "description": "个人博客",
+  "main": "index.js",
+  "repository": "https://github.com/Sinton/sinton.github.io.git",
+  "author": "Sinton <yansuntong@gmail.com>",
+  "license": "MIT",
+  "scripts": {
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:serve": "vitepress serve docs"
+  },
+  "devDependencies": {
+    "vitepress": "^1.0.0-alpha.61",
+    "vue": "^3.2.47"
+  }
+}
