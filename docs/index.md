@@ -1,37 +1,29 @@
-## Welcome to GitHub Pages
+---
+layout: home
 
-You can use the [editor on GitHub](https://github.com/Sinton/sinton.github.io/edit/master/README.md) to maintain and preview the content for your website in Markdown files.
+title: Sinton
+titleTemplate: 个人博客
 
-Whenever you commit to this repository, GitHub Pages will run [Jekyll](https://jekyllrb.com/) to rebuild the pages in your site, from the content in your Markdown files.
+hero:
+  name: Sinton
+  text: 个人博客
+  tagline: 爱旅行，爱学习，爱编程
+  actions:
+    - theme: brand
+      text: 开始
+      link: /quick/
+    - theme: alt
+      text: 在 Github 上查看
+      link: https://github.com/Sinton/sinton.github.io
 
-### Markdown
-
-Markdown is a lightweight and easy-to-use syntax for styling your writing. It includes conventions for
-
-```markdown
-Syntax highlighted code block
-
-# Header 1
-## Header 2
-### Header 3
-
-- Bulleted
-- List
-
-1. Numbered
-2. List
-
-**Bold** and _Italic_ and `Code` text
-
-[Link](url) and ![Image](src)
-```
-
-For more details see [GitHub Flavored Markdown](https://guides.github.com/features/mastering-markdown/).
-
-### Jekyll Themes
-
-Your Pages site will use the layout and styles from the Jekyll theme you have selected in your [repository settings](https://github.com/Sinton/sinton.github.io/settings). The name of this theme is saved in the Jekyll `_config.yml` configuration file.
-
-### Support or Contact
-
-Having trouble with Pages? Check out our [documentation](https://help.github.com/categories/github-pages-basics/) or [contact support](https://github.com/contact) and we’ll help you sort it out.
+features:
+  - icon: 💡
+    title: MyCar
+    details: 基于OBD2协议的车连应用
+  - icon: 📦
+    title: Coco
+    details: Docker 可视化管理控制台
+  - icon: 🛠️
+    title: docker-installer
+    details: Docker 环境自动化安装小工具
+---

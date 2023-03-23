@@ -1,7 +1,7 @@
 {
   "name": "sinton.github.io",
   "version": "1.0.0",
-  "description": "个人博客",
+  "description": "my blog",
   "main": "index.js",
   "repository": "https://github.com/Sinton/sinton.github.io.git",
   "author": "Sinton <yansuntong@gmail.com>",
