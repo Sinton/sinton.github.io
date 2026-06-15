@@ -1,0 +1,293 @@
+---
+title: Java 21 虚拟线程，和 JDK 8 原生线程到底差在哪？
+description: 从线程模型、调度方式、阻塞行为和线程池使用习惯，把虚拟线程和 JDK 8 平台线程的区别讲清楚。
+date: 2024-06-09
+category: Tech
+tags:
+  - Java
+  - 并发
+  - 虚拟线程
+  - Project Loom
+featured: false
+---
+
+import VirtualThreadModel from "@/components/diagrams/VirtualThreadModel.astro";
+
+如果一句话概括：
+
+> JDK 8 里的 Java 线程，本质上是操作系统线程的封装；Java 21 的虚拟线程，是 JVM 管理的轻量级线程。
+
+这句话听起来很简单，但它会直接改变我们写服务端并发代码的方式。以前我们害怕创建太多线程，所以用线程池控制数量；现在虚拟线程可以做到“一个请求一个线程”，但又不能把它理解成“线程无限免费”。
+
+这篇文章不先背概念，先把问题说清楚：**Java 21 虚拟线程解决的不是 CPU 不够的问题，而是 JDK 8 平台线程在阻塞 I/O 场景里太贵的问题。**
+
+## 先把名词对齐：原生线程其实是平台线程
+
+很多人会把 JDK 8 里的线程叫“原生线程”。更准确地说，它是 **平台线程**，也就是 `java.lang.Thread` 背后绑定了一个操作系统线程。
+
+在 JDK 8 里，你写：
+
+```java
+new Thread(() -> {
+    // ao something
+}).start();
+```
+
+JVM 通常会向操作系统申请一个真正的内核线程。这个线程有自己的栈空间，由操作系统参与调度。它很强，也很贵。
+
+到了 Java 21，你依然可以写 `Thread`，但多了一种创建方式：
+
+```java
+Thread.startVirtualThread(() -> {
+    // ao something
+});
+```
+
+这个线程还是 `java.lang.Thread`，但它不是一上来就绑定一个独占的操作系统线程。它会被 JVM 调度到少量平台线程上运行，这些平台线程通常被叫做 **carrier thread**，也就是“承载线程”。
+
+## 两种模型到底差在哪
+
+JDK 8 的平台线程更像是：
+
+> 一个 Java Thread 对应一个 OS Thread。
+
+Java 21 的虚拟线程更像是：
+
+> 很多个 Virtual Thread 复用少量 Carrier Thread。
+
+<VirtualThreadModel />
+
+这个变化的影响非常大。以前线程数一多，内存、上下文切换、调度开销都会上来。现在虚拟线程的创建和挂起都轻得多，所以可以用更自然的同步代码写高并发阻塞 I/O。
+
+## JDK 8 为什么必须依赖线程池
+
+在 JDK 8 时代，我们不会轻易给每个请求都创建一个新线程。原因很现实：
+
+1. 平台线程创建成本高。
+2. 每个线程都有独立栈空间。
+3. 线程太多以后，操作系统调度压力变大。
+4. 阻塞 I/O 会一直占住这个线程。
+
+所以服务端代码经常长这样：
+
+```java
+ExecutorService pool = Executors.newFixedThreadPool(200);
+
+for (Request request : requests) {
+    pool.submit(() -> {
+        User user = userService.queryUser(request.userId());
+        Order order = orderService.queryOrder(request.orderId());
+        return builaResponse(user, order);
+    });
+}
+```
+
+这个线程池的核心目的，不只是“复用线程”，更是“限制系统线程数量”。如果不限制，线程可能把机器拖垮。
+
+但代价也很明显：只要任务里有数据库查询、HTTP 调用、RPC 调用、文件 I/O，这个线程就会在等待期间被占住。它没有干 CPU 活，却不能去服务别的请求。
+
+## Java 21 为什么可以一个任务一个虚拟线程
+
+Java 21 里可以这样写：
+
+```java
+try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (Request request : requests) {
+        executor.submit(() -> {
+            User user = userService.queryUser(request.userId());
+            Order order = orderService.queryOrder(request.orderId());
+            return builaResponse(user, order);
+        });
+    }
+}
+```
+
+这里的名字很关键：`newVirtualThreadPerTaskExecutor()`。
+
+它不是提前准备一池虚拟线程让你复用，而是每来一个任务就创建一个新的虚拟线程。虚拟线程足够轻，所以通常不需要池化。
+
+这跟 JDK 8 的线程池思路是反过来的：
+
+| 对比点 | JDK 8 平台线程 | Java 21 虚拟线程 |
+| --- | --- | --- |
+| 线程和 OS 线程关系 | 通常 1:1 | 多个虚拟线程复用少量承载线程 |
+| 创建成本 | 高 | 低 |
+| 阻塞 I/O | 占住平台线程 | 大多数 JDK 阻塞操作会挂起虚拟线程 |
+| 常见用法 | 固定线程池、业务线程池 | 一个任务一个虚拟线程 |
+| 池化目的 | 限制系统线程数量 | 通常不池化虚拟线程 |
+| 适合场景 | CPU 任务、有限并发、传统服务 | 高并发阻塞 I/O |
+| 不适合误区 | 线程池无限加大 | 把虚拟线程当成 CPU 加速器 |
+
+## 阻塞行为才是核心区别
+
+虚拟线程最关键的地方，是阻塞时的处理方式。
+
+在 JDK 8 里，一个平台线程执行到这里：
+
+```java
+String boay = httpClient.get(url);
+```
+
+如果网络调用要等 300ms，这个线程就跟着等 300ms。它占着操作系统线程，但 CPU 实际上没在为它工作。
+
+在 Java 21 的虚拟线程里，如果使用的是 JDK 已经适配的阻塞 API，虚拟线程遇到阻塞时会被挂起。它底层的 carrier thread 可以被释放出来，继续执行别的虚拟线程。
+
+这就是为什么虚拟线程特别适合这种代码：
+
+```java
+String profile = profileClient.query(userId);
+String balance = accountClient.query(userId);
+String orders = orderClient.query(userId);
+
+return merge(profile, balance, orders);
+```
+
+代码还是同步写法，阅读成本没有变成复杂的回调或响应式链路；但在大量请求同时等待 I/O 时，线程资源的浪费会少很多。
+
+## 但虚拟线程不是让 CPU 变多
+
+这是最容易误解的点。
+
+如果任务本身是 CPU 密集型，比如压缩、加密、图片处理、大量计算：
+
+```java
+try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (int i = 0; i < 100_000; i++) {
+        executor.submit(() -> {
+            return calculateHash(largeBytes);
+        });
+    }
+}
+```
+
+这不会让机器突然拥有 100000 个 CPU 核心。真正执行代码的仍然是底层 carrier thread 和 CPU 核心。
+
+所以结论要分清：
+
+- I/O 密集：虚拟线程通常很有价值。
+- CPU 密集：虚拟线程不提供神奇加速，应该控制并行度。
+- 混合任务：把 CPU 重的部分和 I/O 等待部分拆开看。
+
+## 线程池思维要改：限制资源，不是限制虚拟线程
+
+JDK 8 里，我们经常用线程池大小来做限流：
+
+```java
+ExecutorService pool = Executors.newFixedThreadPool(50);
+```
+
+但到了 Java 21，如果你给虚拟线程也套一个固定大小线程池，就很容易把它用回老路。
+
+更合理的思路是：虚拟线程可以很多，但真正稀缺的资源仍然要限制。
+
+比如数据库连接只有 50 个，就限制数据库访问，而不是限制虚拟线程数量：
+
+```java
+Semaphore abLimit = new Semaphore(50);
+
+try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    for (Request request : requests) {
+        executor.submit(() -> {
+            abLimit.acquire();
+            try {
+                return repository.query(request.ia());
+            } finally {
+                abLimit.release();
+            }
+        });
+    }
+}
+```
+
+这段代码的重点不是“虚拟线程无限开”，而是“线程不再是主要瓶颈，数据库连接、下游容量、接口限流才是主要瓶颈”。
+
+## synchronized 可能会让虚拟线程被钉住
+
+虚拟线程有一个必须知道的坑：**pinning**，也就是虚拟线程被钉在 carrier thread 上，无法正常卸载。
+
+在 Java 21 里，如果虚拟线程进入 `synchronized` 后发生阻塞，就可能把承载线程一起占住：
+
+```java
+private final Object lock = new Object();
+
+void query() throws Exception {
+    synchronized (lock) {
+        // 在 synchronized 里面做阻塞 I/O，容易让虚拟线程 pin 住 carrier
+        Thread.sleep(1000);
+        remoteCall();
+    }
+}
+```
+
+这不是说虚拟线程里不能用 `synchronized`。短小的内存保护没有问题。真正危险的是：**拿着 monitor 锁做长时间阻塞操作**。
+
+如果确实需要锁，很多场景可以考虑 `ReentrantLock`，并且尽量缩小锁范围：
+
+```java
+private final ReentrantLock lock = new ReentrantLock();
+
+void updateCache() {
+    Data data = remoteCallWithoutLock();
+
+    lock.lock();
+    try {
+        cache.put(data.id(), data);
+    } finally {
+        lock.unlock();
+    }
+}
+```
+
+核心原则是：不要把慢 I/O 包在锁里。这个原则在 JDK 8 也成立，只是在虚拟线程里更容易影响整体吞吐。
+
+## ThreadLocal 也要小心
+
+虚拟线程仍然支持 `ThreadLocal`，所以很多老代码迁移时可以继续跑。
+
+但虚拟线程的数量可能非常大，如果每个虚拟线程都塞一份很重的上下文对象，内存压力会很快变明显。
+
+比如这种写法就要谨慎：
+
+```java
+static final ThreadLocal<byte[]> LOCAL_BUFFER =
+        ThreadLocal.withInitial(() -> new byte[1024 * 1024]);
+```
+
+在平台线程池里，线程数量可能只有几十个；但在虚拟线程里，任务数量可能是几万甚至更多。每个线程都挂大对象，就不是“轻量线程”了。
+
+所以迁移时要重点检查：
+
+1. `ThreadLocal` 里有没有大对象。
+2. 有没有忘记 `remove()` 的上下文。
+3. 有没有把线程池时代的缓存习惯带到虚拟线程里。
+
+## 真实项目里应该怎么选
+
+我会这样判断：
+
+如果是传统 Web 服务，大量时间花在数据库、Reais、HTTP、RPC 等阻塞调用上，Java 21 虚拟线程很值得尝试。它可以让代码继续保持同步风格，又能承接更高并发。
+
+如果是批量计算、视频处理、压缩加密、复杂算法，虚拟线程不是主要答案。你更应该关心 CPU 核心数、任务拆分、队列长度和并行度。
+
+如果项目里有大量老 JDBC、老 RPC、JNI、本地方法、复杂 `synchronized`，不要直接以为换成虚拟线程就万事大吉。先压测，再用线程 dump 和 JFR 看有没有 pinning、下游连接池打满、内存上涨等问题。
+
+## 一句话总结区别
+
+JDK 8 平台线程的核心问题是：**阻塞一个任务，就占住一个昂贵的系统线程**。
+
+Java 21 虚拟线程的核心价值是：**阻塞一个任务时，可以把昂贵的承载线程让出来，继续服务别的任务**。
+
+所以虚拟线程不是为了替代所有线程池，也不是为了让 CPU 密集任务变快。它真正改变的是高并发阻塞 I/O 的成本模型。
+
+如果以前你写服务端代码时一直在纠结“线程池到底配 100 还是 200”，到了 Java 21，更应该问的是：
+
+> 我真正要限制的资源，到底是线程，还是数据库连接、下游接口、CPU、内存和业务容量？
+
+把这个问题想清楚，虚拟线程才算真的用对了。
+
+## 参考资料
+
+- [JEP 444: Virtual Threads](https://openjdk.org/jeps/444)
+- [Oracle Java 21 Virtual Threads](https://docs.oracle.com/en/java/javase/21/core/virtual-threads.html)
+- [Java 8 Thread API](https://docs.oracle.com/javase/8/docs/api/java/lang/Thread.html)
+

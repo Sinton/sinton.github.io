@@ -1,0 +1,46 @@
+---
+import "../../styles/personal-shared.css";
+import "../../styles/personal-works.css";
+import { themeConfig } from "@/theme.config";
+import { getCollection } from "astro:content";
+import BaseLayout from "astro-newspaper-theme/layouts/BaseLayout.astro";
+import Masthead from "astro-newspaper-theme/components/Masthead.astro";
+import WorkCard from "astro-newspaper-theme/components/WorkCard.astro";
+
+const works = (await getCollection("works")).sort(
+  (a, b) => a.data.order - b.data.order,
+);
+const workSlug = (id: string) => id.replace(/\/index$/, "");
+---
+
+
+<BaseLayout title="作品刊" description="我的作品、应用与实验项目" config={themeConfig}>
+<Masthead config={themeConfig} />
+  <main class="archive-page">
+    <header class="archive-header">
+      <h1 class="section-kicker archive-header__kicker-title">作品刊</h1>
+      <p class="archive-header__wide-copy">
+        这里收录我做过和正在做的工具、App 与个人实验；头版只选登少数项目，完整档案都放在这里。
+      </p>
+    </header>
+
+    <section class="works-grid works-grid--archive">
+      <div class="works-grid__inner">
+        {
+          works.map((work) => (
+            <WorkCard
+              href={`/works/${workSlug(work.id)}/`}
+              title={work.data.title}
+              subtitle={work.data.subtitle}
+              deck={work.data.deck}
+              category={work.data.category}
+              year={work.data.year}
+              platform={work.data.platform}
+              accent={work.data.accent}
+            />
+          ))
+        }
+      </div>
+    </section>
+  </main>
+</BaseLayout>

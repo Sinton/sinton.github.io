@@ -1,0 +1,60 @@
+---
+import "../../styles/personal-shared.css";
+import "../../styles/personal-travel.css";
+import { themeConfig } from "@/theme.config";
+import { getCollection, render, type CollectionEntry } from "astro:content";
+import BaseLayout from "astro-newspaper-theme/layouts/BaseLayout.astro";
+import Masthead from "astro-newspaper-theme/components/Masthead.astro";
+import StampTag from "astro-newspaper-theme/components/StampTag.astro";
+import { formatDate } from "astro-newspaper-theme/lib/format";
+
+export async function getStaticPaths() {
+  const travel = await getCollection("travel");
+  return travel.map((entry) => ({
+    params: { id: entry.id },
+    props: { entry },
+  }));
+}
+
+interface Props {
+  entry: CollectionEntry<"travel">;
+}
+
+const { entry } = Astro.props;
+const { Content } = await render(entry);
+
+const moodLabels: Record<string, string> = {
+  "Field Note": "外勤笔记",
+};
+---
+
+
+<BaseLayout title={entry.data.title} description={entry.data.description} config={themeConfig}>
+<Masthead config={themeConfig} />
+  <main class="detail-page">
+    <article class="column-page column-page--travel">
+      <header class="column-page__header">
+        <StampTag label={moodLabels[entry.data.mood] ?? entry.data.mood} tone="green" />
+        <h1>{entry.data.title}</h1>
+        <p>{entry.data.description}</p>
+        <div class="travel-meta" aria-label="旅行信息">
+          <span class="travel-meta__item">
+            <span class="travel-meta__label">地点</span>
+            <span class="travel-meta__value">{entry.data.location}</span>
+          </span>
+          <span class="travel-meta__item">
+            <span class="travel-meta__label">地区</span>
+            <span class="travel-meta__value">{entry.data.region}</span>
+          </span>
+          <time class="travel-meta__item" datetime={entry.data.date.toISOString()}>
+            <span class="travel-meta__label">日期</span>
+            <span class="travel-meta__value">{formatDate(entry.data.date, themeConfig)}</span>
+          </time>
+        </div>
+      </header>
+      <div class="prose">
+        <Content />
+      </div>
+    </article>
+  </main>
+</BaseLayout>

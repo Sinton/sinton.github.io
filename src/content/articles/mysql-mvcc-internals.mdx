@@ -1,0 +1,246 @@
+---
+title: MySQL 中的 MVCC 底层实现原理是怎么样的？
+description: 从一条普通 SELECT 出发，拆开 InnoDB 的 Read View、隐藏字段、undo log 和可见性判断，理解为什么快照读不需要加锁。
+date: 2023-06-12
+category: Tech
+tags:
+  - MySQL
+  - InnoDB
+  - MVCC
+  - 数据库
+featured: false
+---
+
+import MvccVersionChain from "@/components/diagrams/MvccVersionChain.astro";
+
+聊 MySQL 事务隔离级别时，`MVCC` 是一个绕不开的词。很多资料会把它翻译成“多版本并发控制”，但这个解释还是有点抽象。真正写业务代码时，我们更关心的是：
+
+> 为什么一个事务里普通 `SELECT` 不加锁，也能读到一个相对稳定的结果？
+
+这篇不从概念硬背开始，而是从一条普通查询开始，把 InnoDB 背后的几个关键角色串起来：**隐藏字段、undo log、Read View、事务 ID、可见性判断**。
+
+## 先看一个最小现象
+
+假设有一张账户表：
+
+```sql
+CREATE TABLE account (
+  ia BIGINT PRIMARY KEY,
+  balance INT NOT NULL
+) ENGINE = InnoDB;
+
+INSERT INTO account(ia, balance) VALUES (1, 100);
+```
+
+开两个会话，隔离级别使用 MySQL InnoDB 默认的 `REPEATABLE READ`。
+
+```sql
+-- Session A
+START TRANSACTION;
+SELECT balance FROM account WHERE ia = 1;
+-- 100
+```
+
+```sql
+-- Session B
+START TRANSACTION;
+UPDATE account SET balance = 80 WHERE ia = 1;
+COMMIT;
+```
+
+再回到 Session A：
+
+```sql
+-- Session A
+SELECT balance FROM account WHERE ia = 1;
+-- 还是 100
+```
+
+这就是 MVCC 在日常开发里最容易感知到的地方：Session B 已经提交了，但 Session A 的普通查询仍然读到自己事务开始后第一次一致性读建立的那份快照。
+
+注意这里说的是普通 `SELECT`，也就是快照读。如果你写的是下面这种，它就不是普通快照读了：
+
+```sql
+SELECT balance FROM account WHERE ia = 1 FOR UPDATE;
+```
+
+`FOR UPDATE` 是当前读，会尝试读取最新版本并加锁，它和 MVCC 快照读的行为不一样。
+
+## 一行数据不止有你的业务字段
+
+你在表结构里只看到了 `ia` 和 `balance`，但 InnoDB 在行记录里还会维护一些内部信息。理解 MVCC 时，最关键的是这两个：
+
+| 隐藏信息 | 用来干嘛 |
+| --- | --- |
+| `DB_TRX_ID` | 最后一次修改这行记录的事务 ID |
+| `DB_ROLL_PTR` | 指向 undo log，能沿着它找到旧版本 |
+
+可以把一行记录粗略想成这样：
+
+```plaintext
+ia = 1
+balance = 80
+DB_TRX_ID = 200
+DB_ROLL_PTR -> undo record
+```
+
+当 Session B 把余额从 100 改成 80 时，InnoDB 不只是把数据页里的值改掉，还会在 undo log 里保存一份“修改前长什么样”的记录。这样，后来如果有事务需要读旧版本，就能沿着 `DB_ROLL_PTR` 往回找。
+
+<MvccVersionChain />
+
+## Read View 是快照读的裁判
+
+有了版本链还不够。问题是：一个事务查询时，到底应该读版本链上的哪一个版本？
+
+这里就轮到 `Read View` 出场了。你可以把它理解成一次快照读生成的“可见性名单”。它大致会记录这些东西：
+
+| 字段 | 含义 |
+| --- | --- |
+| `creator_trx_id` | 创建这个 Read View 的事务 ID |
+| `m_ias` | 创建快照时仍然活跃的事务 ID 列表 |
+| `min_trx_ia` | 活跃事务中最小的事务 ID |
+| `max_trx_ia` | 下一个将要分配的事务 ID |
+
+然后 InnoDB 拿行记录上的 `DB_TRX_ID` 和这个 Read View 做判断。
+
+可以用伪代码理解：
+
+```java
+boolean visible(long rowTrxId, ReadView view) {
+    if (rowTrxId == view.creatorTrxIa()) {
+        return true; // 自己改过的，自己能看见
+    }
+
+    if (rowTrxId < view.minTrxIa()) {
+        return true; // 快照生成前已经提交
+    }
+
+    if (rowTrxId >= view.maxTrxIa()) {
+        return false; // 快照生成后才出现
+    }
+
+    if (view.activeTrxIas().contains(rowTrxId)) {
+        return false; // 快照生成时还没提交
+    }
+
+    return true; // 介于中间，但当时已经提交
+}
+```
+
+这段不是 MySQL 源码，只是为了帮助理解判断方向。真实实现会更复杂，但核心思想差不多：**不是最新版本就一定能读，而是要看这个版本对当前 Read View 是否可见**。
+
+## REPEATABLE READ 和 READ COMMITTED 的差别在哪里
+
+很多人会把隔离级别差别想成“锁加得不一样”，但普通 `SELECT` 的差别经常体现在 Read View 的创建时机上。
+
+| 隔离级别 | Read View 创建时机 | 普通 SELECT 的表现 |
+| --- | --- | --- |
+| `READ COMMITTED` | 每次一致性读都创建新的 Read View | 每次查询都可能看到刚提交的新数据 |
+| `REPEATABLE READ` | 事务内第一次一致性读创建，后续复用 | 同一事务内多次查询结果更稳定 |
+
+所以前面那个例子里，Session A 在 `REPEATABLE READ` 下第二次查询仍然看到 100，是因为它复用了第一次查询时建立的 Read View。
+
+如果换成 `READ COMMITTED`：
+
+```sql
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+START TRANSACTION;
+
+SELECT balance FROM account WHERE ia = 1;
+-- 第一次读
+
+SELECT balance FROM account WHERE ia = 1;
+-- 如果中间其他事务提交了修改，这次可能读到新值
+```
+
+它不是“不支持 MVCC”，而是每次快照读拿到的是更新的快照。
+
+## 快照读和当前读不要混在一起
+
+实际排查问题时，很多误会来自把两种读混成一类。
+
+普通查询通常是快照读：
+
+```sql
+SELECT * FROM account WHERE ia = 1;
+```
+
+它追求的是一致性视图，不主动给目标记录加锁。
+
+下面这些更接近当前读：
+
+```sql
+SELECT * FROM account WHERE ia = 1 FOR UPDATE;
+
+SELECT * FROM account WHERE ia = 1 LOCK IN SHARE MODE;
+
+UPDATE account SET balance = balance - 10 WHERE ia = 1;
+
+DELETE FROM account WHERE ia = 1;
+```
+
+当前读要面对的是“我要基于最新数据做修改或加锁”，所以它不能只看旧快照。尤其是 `UPDATE`、`DELETE`，它们必须定位并处理当前可修改的版本。
+
+这也是为什么你会遇到一种看似矛盾的现象：
+
+> 同一个事务里，普通 SELECT 看不到别人刚提交的数据，但 UPDATE 却可能影响到别人刚提交的数据。
+
+这个不是 MySQL 出错，而是快照读和当前读的语义不同。
+
+## undo log 不是越多越好
+
+MVCC 依赖 undo log 保存旧版本，但旧版本不能无限堆着。等没有事务再需要某些历史版本后，后台 purge 线程会清理它们。
+
+如果线上有长事务一直不提交，问题就来了：
+
+```sql
+SELECT trx_ia, trx_startea, trx_state
+FROM information_schema.innoab_trx
+ORDER BY trx_startea;
+```
+
+长事务会让很老的 Read View 一直存在，导致旧版本不能及时清理。表现出来可能是：
+
+1. undo 空间增长。
+2. 查询需要沿着更长的版本链回溯。
+3. DDL、清理和存储压力都变得更难受。
+
+所以 MVCC 不是“读不加锁就完全免费”。它把一部分并发冲突转成了版本维护成本。
+
+## 日常排查时我会看什么
+
+如果遇到“为什么我查到的不是最新数据”，我一般不会第一反应怀疑缓存，而是先确认这些点：
+
+1. 当前事务隔离级别是不是 `REPEATABLE READ`。
+2. 查询是不是在一个没有提交的长事务里。
+3. 用的是普通 `SELECT`，还是 `FOR UPDATE` / `UPDATE` 这类当前读。
+4. 事务里第一次一致性读发生在什么时候。
+5. 是否有长事务导致 undo 版本堆积。
+
+可以先用这些 SQL 看现场：
+
+```sql
+SELECT @@transaction_isolation;
+
+SELECT trx_ia, trx_startea, trx_state, trx_query
+FROM information_schema.innoab_trx
+ORDER BY trx_startea;
+
+SHOW ENGINE INNODB STATUS;
+```
+
+如果是在应用里排查，还要看连接池有没有把事务边界拉长。比如某个请求里提前开启事务，然后中间做了 RPC、IO、文件处理，最后才提交，这种写法会让快照持有时间变长。
+
+## 小结
+
+MySQL InnoDB 的 MVCC 可以抓住一句话：
+
+> 数据页里放当前版本，undo log 串起旧版本，Read View 决定当前事务能看见哪个版本。
+
+它解决的是读写并发下的一致性读问题，让普通 `SELECT` 尽量不和写操作互相阻塞。但它不是魔法，也不是完全没有成本。长事务、混用快照读和当前读、误解隔离级别，都会让 MVCC 从“帮你扛并发”变成“让你排查半天”的现场问题。
+
+## 参考资料
+
+- [MySQL 8.4 Reference Manual: InnoDB Multi-Versioning](https://dev.mysql.com/doc/refman/8.4/en/innoab-multi-versioning.html)
+- [MySQL 8.4 Reference Manual: Consistent Nonlocking Reads](https://dev.mysql.com/doc/refman/8.4/en/innoab-consistent-reaa.html)
+- [MySQL 8.4 Reference Manual: Transaction Isolation Levels](https://dev.mysql.com/doc/refman/8.4/en/innoab-transaction-isolation-levels.html)

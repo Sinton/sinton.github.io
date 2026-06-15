@@ -1,0 +1,44 @@
+---
+import DiagramFrame from "./DiagramFrame.astro";
+---
+
+<DiagramFrame
+  title="线程模型从 1:1 变成 M:N"
+  note="虚拟线程不是没有线程，而是把大量业务线程交给 JVM 轻量调度。"
+  caption="JDK 8 主要是 1:1 线程模型；Java 21 虚拟线程是大量虚拟线程复用少量承载线程。"
+>
+  <div class="thread-model">
+    <section class="thread-model__panel thread-model__panel--platform">
+      <h4>JDK 8 平台线程</h4>
+      <div class="thread-model__one-to-one">
+        <div class="tech-node tech-node--focus">
+          <strong>Java Thread</strong>
+        </div>
+        <div class="tech-arrow" aria-hidden="true"></div>
+        <div class="tech-node tech-node--red">
+          <strong>OS Thread</strong>
+        </div>
+      </div>
+      <p>阻塞一次，就占住一个系统线程。</p>
+    </section>
+
+    <section class="thread-model__panel thread-model__panel--virtual">
+      <h4>Java 21 虚拟线程</h4>
+      <div class="thread-model__many-to-one">
+        <div class="thread-model__virtuals">
+          <span>VT</span>
+          <span>VT</span>
+          <span>VT</span>
+        </div>
+        <div class="thread-model__fanout" aria-hidden="true">
+          <i></i>
+          <i></i>
+          <i></i>
+        </div>
+        <div class="tech-node tech-node--red thread-model__carrier">
+          <strong>Carrier / OS Thread</strong>
+        </div>
+      </div>
+    </section>
+  </div>
+</DiagramFrame>

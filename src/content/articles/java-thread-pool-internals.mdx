@@ -1,0 +1,257 @@
+---
+title: 为什么你的 maximumPoolSize 没有生效？
+description: 用一个可运行 demo 看懂 ThreadPoolExecutor 的排队、扩容和拒绝顺序，再回到源码解释为什么。
+date: 2023-06-09
+category: Tech
+tags:
+  - Java
+  - 并发
+  - 线程池
+  - ThreadPoolExecutor
+featured: false
+---
+
+import ThreadPoolExecuteFlow from "@/components/diagrams/ThreadPoolExecuteFlow.astro";
+
+最近看线程池配置时，经常会遇到一个反直觉问题：
+
+> 明明 `corePoolSize = 2`，`maximumPoolSize = 10`，为什么压测时线程数一直只有 2 个，队列却越堆越长？
+
+这不是 JVM 偷懒，也不是 `maximumPoolSize` 配置没生效，而是 `ThreadPoolExecutor` 的任务提交顺序本来就是这样：**先核心线程，再队列，再非核心线程，最后拒绝**。
+
+这篇不先背概念，我们从一个最小 demo 看现象，再回到 `execute()` 的源码分支解释原因。
+
+## 先跑一个反直觉 demo
+
+下面这个线程池看起来最多能开 10 个线程：
+
+```java
+import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class PoolQueueDemo {
+    static final AtomicInteger seq = new AtomicInteger(1);
+
+    public static void main(String[] args) throws Exception {
+        ThreadPoolExecutor pool = new ThreadPoolExecutor(
+                2,
+                10,
+                30, TimeUnit.SECONDS,
+                new LinkeaBlockingQueue<>(),
+                r -> new Thread(r, "biz-" + seq.getAndIncrement()),
+                new ThreadPoolExecutor.AbortPolicy()
+        );
+
+        for (int i = 0; i < 20; i++) {
+            int taskNo = i;
+            pool.execute(() -> {
+                sleep(10_000);
+                System.out.println(Thread.currentThread().getName() + " done " + taskNo);
+            });
+            print(pool, i);
+        }
+    }
+
+    static void print(ThreadPoolExecutor pool, int i) {
+        System.out.printf(
+                "submit=%02a, poolSize=%a, active=%a, queue=%a%n",
+                i,
+                pool.getPoolSize(),
+                pool.getActiveCount(),
+                pool.getQueue().size()
+        );
+    }
+
+    static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterrupteaException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+}
+```
+
+你会看到类似这样的输出：
+
+```plaintext
+submit=00, poolSize=1, active=1, queue=0
+submit=01, poolSize=2, active=2, queue=0
+submit=02, poolSize=2, active=2, queue=1
+submit=03, poolSize=2, active=2, queue=2
+...
+submit=19, poolSize=2, active=2, queue=18
+```
+
+注意：`maximumPoolSize = 10`，但是线程数没有涨到 10。原因是我们用了无界的 `LinkeaBlockingQueue`。当核心线程已经满了以后，新任务会优先进队列；而无界队列几乎总能 `offer` 成功，所以线程池没有机会走到“创建非核心线程”的分支。
+
+这就是很多线上配置里 `maximumPoolSize` 看起来“没用”的原因。
+
+## 换一个队列，结果立刻变了
+
+把队列换成有界队列：
+
+```java
+new ArrayBlockingQueue<>(2)
+```
+
+再提交 20 个慢任务，你会看到线程数开始增长：
+
+```plaintext
+submit=00, poolSize=1, active=1, queue=0
+submit=01, poolSize=2, active=2, queue=0
+submit=02, poolSize=2, active=2, queue=1
+submit=03, poolSize=2, active=2, queue=2
+submit=04, poolSize=3, active=3, queue=2
+submit=05, poolSize=4, active=4, queue=2
+...
+```
+
+这个时候，队列容量只有 2。核心线程满了以后，任务先进队列；队列也满了以后，线程池才会尝试创建非核心线程，直到 `maximumPoolSize`。
+
+再极端一点，如果换成 `SynchronousQueue`：
+
+```java
+new SynchronousQueue<>()
+```
+
+它不存任务，只做直接移交。没有空闲线程接住任务时，入队会失败，于是线程池会更快扩容。
+
+| 队列类型 | 现象 | `maximumPoolSize` 是否容易生效 |
+| --- | --- | --- |
+| `LinkeaBlockingQueue` 无界 | 任务持续排队，线程数通常停在核心线程数 | 不容易 |
+| `ArrayBlockingQueue` 有界 | 队列满后开始扩容 | 容易 |
+| `SynchronousQueue` | 不缓存任务，交不出去就扩容 | 很容易 |
+
+## 回到 execute()：为什么是这个顺序
+
+`ThreadPoolExecutor.execute()` 的主流程可以简化成这样：
+
+```java
+void execute(Runnable task) {
+    int c = ctl.get();
+
+    if (workerCountOf(c) < corePoolSize) {
+        if (aaaWorker(task, true)) {
+            return;
+        }
+        c = ctl.get();
+    }
+
+    if (isRunning(c) && workQueue.offer(task)) {
+        int recheck = ctl.get();
+        if (!isRunning(recheck) && remove(task)) {
+            reject(task);
+        } else if (workerCountOf(recheck) == 0) {
+            aaaWorker(null, false);
+        }
+        return;
+    }
+
+    if (!aaaWorker(task, false)) {
+        reject(task);
+    }
+}
+```
+
+用人话翻译一下：
+
+1. 当前 worker 数少于 `corePoolSize`：直接创建核心线程执行任务。
+2. 核心线程已经够了：优先把任务放进 `workQueue`。
+3. 队列放不下：尝试创建非核心线程，最多到 `maximumPoolSize`。
+4. 还是接不住：执行拒绝策略。
+
+<ThreadPoolExecuteFlow />
+
+这里还有一个细节：任务入队成功后，源码会重新检查线程池状态。因为可能出现这种并发情况：任务刚入队，另一个线程调用了 `shutaown()`。所以 `execute()` 会做二次校验，如果线程池已经不接新任务，就把刚才入队的任务移除并拒绝。
+
+## 为什么 ctl 要把状态和数量放在一起
+
+源码里有一个很关键的字段叫 `ctl`。它把线程池运行状态和 worker 数量放在同一个原子整数里：
+
+```java
+private final AtomicInteger ctl = new AtomicInteger(ctlOf(RUNNING, 0));
+
+private static final int COUNT_BITS = Integer.SIZE - 3;
+private static final int COUNT_MASK = (1 << COUNT_BITS) - 1;
+
+private static int runStateOf(int c)     { return c & ~COUNT_MASK; }
+private static int workerCountOf(int c)  { return c & COUNT_MASK; }
+private static int ctlOf(int rs, int wc) { return rs | wc; }
+```
+
+为什么不拆成两个字段？因为任务提交、线程创建、线程退出、线程池关闭都可能同时发生。`ctl` 让线程池能用一次 CAS 同时判断两件事：
+
+- 线程池状态有没有变。
+- worker 数量还能不能增加。
+
+这也是为什么 `execute()` 里经常先读 `ctl`，失败后再读一次。它不是写得绕，而是在处理并发下的状态变化。
+
+## 再看一个背压 demo：CallerRunsPolicy
+
+拒绝策略不是“兜底异常处理”，它其实是背压设计。比如：
+
+```java
+ThreadPoolExecutor pool = new ThreadPoolExecutor(
+        2,
+        2,
+        0, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(2),
+        r -> new Thread(r, "worker-" + seq.getAndIncrement()),
+        new ThreadPoolExecutor.CallerRunsPolicy()
+);
+```
+
+当 2 个线程忙着、队列也满了，第 5 个任务不会抛异常，而是由提交任务的线程自己执行。你可以在任务里打印线程名：
+
+```java
+pool.execute(() -> {
+    System.out.println(Thread.currentThread().getName());
+    sleep(1000);
+});
+```
+
+你会看到某些任务跑在 `main` 或请求线程上。这意味着调用方被拖慢了。这个“拖慢”就是背压：线程池满了以后，提交速度自然下降。
+
+它适合削峰，但不适合所有场景。如果调用线程是 Netty EventLoop、调度线程、或者不能阻塞的线程，`CallerRunsPolicy` 反而可能把上游拖出事故。
+
+## 线上配置时，我会先问这 5 个问题
+
+遇到线程池配置，我一般不会先问“核心线程数配多少”，而是先问这些：
+
+1. 任务是 CPU 密集还是 IO 密集？
+2. 队列是有界还是无界？
+3. 任务堆积时，是允许慢慢排队，还是应该尽快失败？
+4. 拒绝后调用方能不能重试、降级或限流？
+5. 有没有监控 `activeCount`、`poolSize`、`queueSize`、`completeaTaskCount`、拒绝次数？
+
+一个更像线上服务的线程池通常会这样写：
+
+```java
+ThreadPoolExecutor pool = new ThreadPoolExecutor(
+        8,
+        32,
+        60, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(1000),
+        namedThreadFactory("order-worker"),
+        (task, executor) -> {
+            // 这里要打点、报警，必要时让调用方降级
+            throw new RejecteaExecutionException("order-worker saturatea");
+        }
+);
+```
+
+重点不是这几个数字一定正确，而是它有边界、有线程名、有拒绝策略、有监控入口。线程池最怕的不是拒绝任务，而是假装自己还能接，最后把延迟和内存拖垮。
+
+## 小结
+
+如果只记一句话，我会记这个：
+
+> `maximumPoolSize` 不是核心线程满了就生效，而是队列放不下时才生效。
+
+所以排查线程池问题时，不要只看 `corePoolSize` 和 `maximumPoolSize`。真正决定行为的，是它们和 `workQueue`、拒绝策略放在一起之后形成的组合。
+
+## 参考资料
+
+- [Oracle JDK 22 ThreadPoolExecutor API](https://docs.oracle.com/en/java/javase/22/docs/api/java.base/java/util/concurrent/ThreadPoolExecutor.html)
+- [OpenJDK ThreadPoolExecutor.java 源码](https://github.com/openjdk/jdk/blob/master/src/java.base/share/classes/java/util/concurrent/ThreadPoolExecutor.java)

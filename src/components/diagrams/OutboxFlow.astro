@@ -1,0 +1,39 @@
+---
+import DiagramFrame from "./DiagramFrame.astro";
+
+const steps = [
+  { title: "订单库", copy: "订单 + 事件", tone: "warm" },
+  { title: "投递任务", copy: "可重试", tone: "blue" },
+  { title: "消息队列", copy: "异步解耦", tone: "green" },
+  { title: "业务消费", copy: "幂等处理", tone: "red" },
+];
+
+const labels = ["扫描", "发送", "订阅"];
+---
+
+<DiagramFrame
+  title="轻量一致性的主链路"
+  note="本地事务先站稳，再通过消息、幂等和补偿把状态推到最终一致。"
+  caption="轻量方案不是不要一致性，而是把一致性从“一个大事务”拆成“可恢复的多步流程”。"
+>
+  <div class="tech-diagram__flow tech-diagram__flow--steps">
+    {
+      steps.map((step, index) => (
+        <>
+          <section class={`tech-node tech-node--${step.tone}`}>
+            <strong>{step.title}</strong>
+            <p>{step.copy}</p>
+          </section>
+          {index < steps.length - 1 && (
+            <div class="tech-arrow" aria-label={labels[index]}>
+              <span>{labels[index]}</span>
+            </div>
+          )}
+        </>
+      ))
+    }
+  </div>
+  <aside class="tech-callout">
+    <p>这套方案牺牲的是强一致瞬间完成，换来的是低侵入、可观测、容易补偿。</p>
+  </aside>
+</DiagramFrame>

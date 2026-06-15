@@ -1,0 +1,89 @@
+---
+import "../styles/personal-shared.css";
+import "../styles/personal-about.css";
+import { themeConfig } from "@/theme.config";
+import BaseLayout from "astro-newspaper-theme/layouts/BaseLayout.astro";
+import Masthead from "astro-newspaper-theme/components/Masthead.astro";
+---
+
+
+<BaseLayout title="关于我" description="关于阿通和这份个人晚报" config={themeConfig}>
+<Masthead config={themeConfig} />
+  <main class="archive-page about-page">
+    <header class="archive-header">
+      <h1 class="section-kicker archive-header__kicker-title">关于我</h1>
+      <p class="archive-header__wide-copy">
+        这里放的是我这些年折腾过的作品、写过的一些想法，还有路上留下来的旅行记录。说是“晚报”，其实就是给自己留一份能慢慢翻回去看的东西。
+      </p>
+    </header>
+
+    <section class="about-profile" aria-label="本报主编档案">
+      <article class="about-profile__lead">
+        <span class="section-kicker">主编小传</span>
+        <h2>阿通，常驻杭州。</h2>
+        <p>
+          2017 年那会儿，我开始做一些自己会用到的小工具。写东西是后来才慢慢多起来的，2019 年前后记得最多的还是旅行，去哪儿走了一圈，就把路上的事顺手记下来。
+        </p>
+        <p>
+          后来写的东西慢慢变杂了，有技术理解，也有一些关于 AI、经济和生活的想法。比起只摆结果，我更想把当时为什么做、怎么想、后来又怎么看这些东西留下来。
+        </p>
+      </article>
+
+      <aside class="about-ledger" aria-label="本报档案">
+        <div class="about-ledger__title">本报档案</div>
+        <dl>
+          <div>
+            <dt>创刊</dt>
+            <dd>2017</dd>
+          </div>
+          <div>
+            <dt>开写</dt>
+            <dd>2019 前后，从旅行日志开始</dd>
+          </div>
+          <div>
+            <dt>常驻</dt>
+            <dd>杭州</dd>
+          </div>
+          <div>
+            <dt>关注</dt>
+            <dd>独立开发 / Java / iOS / AI / 经济观察 / 旅行</dd>
+          </div>
+          <div>
+            <dt>更新</dt>
+            <dd>有空就写，想到就补</dd>
+          </div>
+          <div>
+            <dt>联系</dt>
+            <dd>
+              <a href="https://github.com/Sinton">GitHub</a> / <a href="https://x.com/Sinton">X</a>
+            </dd>
+          </div>
+        </dl>
+      </aside>
+    </section>
+
+    <section class="about-sections" aria-label="长期整理的栏目">
+      <article>
+        <span>作品刊</span>
+        <h2>先解决自己的麻烦</h2>
+        <p>
+          MyEcho、MyMusic、MyAlarm、MySleep、MyTravelJournal、MySurvival，大多都是从自己的需求里长出来的。能不能做大另说，先把自己用着别扭的地方处理掉。
+        </p>
+      </article>
+      <article>
+        <span>随笔栏</span>
+        <h2>把想不明白的事写下来</h2>
+        <p>
+          技术、AI、经济学和一些社会观察都会写。很多时候不是为了给结论，而是把当时卡住的地方、想通的一点东西先记下来。
+        </p>
+      </article>
+      <article>
+        <span>远行记</span>
+        <h2>路上看到的，也顺手记一笔</h2>
+        <p>
+          川西、西藏、大兴安岭、阿勒泰、西安、内蒙、黄山、平潭这些地方，都不只是一串地名。比起攻略，我更想记住那天的天气、路上的风，还有一些当时没来得及说出口的感受。
+        </p>
+      </article>
+    </section>
+  </main>
+</BaseLayout>

@@ -1,0 +1,25 @@
+---
+interface Props {
+  src: string;
+  alt: string;
+  caption: string;
+  credit?: string;
+  href?: string;
+}
+
+const { src, alt, caption, credit, href } = Astro.props;
+---
+
+<figure class="travel-photo">
+  <img src={src} alt={alt} loading="lazy" decoding="async" />
+  <figcaption>
+    <span>{caption}</span>
+    {
+      credit && href ? (
+        <a href={href} target="_blank" rel="noreferrer">{credit}</a>
+      ) : (
+        credit && <em>{credit}</em>
+      )
+    }
+  </figcaption>
+</figure>

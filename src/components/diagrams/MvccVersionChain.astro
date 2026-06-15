@@ -1,0 +1,70 @@
+---
+import DiagramFrame from "./DiagramFrame.astro";
+---
+
+<DiagramFrame
+  title="InnoDB 行记录与 undo 版本链"
+  note="当前值在数据页里；旧值写入 undo log，Read View 沿版本链判断可见性。"
+  caption="这条版本链不是为了“保存历史给你查”，而是为了事务回滚和一致性读服务。"
+>
+  <div class="tech-diagram__section-label">数据页中的当前行</div>
+  <div class="tech-diagram__flow tech-diagram__flow--mvcc">
+    <section class="tech-node tech-node--red tech-node--record">
+      <strong>record</strong>
+      <dl class="tech-kv">
+        <div>
+          <dt>id</dt>
+          <dd>1</dd>
+        </div>
+        <div>
+          <dt>balance</dt>
+          <dd>80</dd>
+        </div>
+        <div>
+          <dt>DB_TRX_ID</dt>
+          <dd>200</dd>
+        </div>
+        <div>
+          <dt>DB_ROLL_PTR</dt>
+          <dd>
+            <span>undo</span>
+            <small>record</small>
+          </dd>
+        </div>
+      </dl>
+    </section>
+
+    <div class="tech-arrow tech-arrow--curve" aria-label="roll ptr">
+      <span>roll ptr</span>
+    </div>
+
+    <section class="tech-node tech-node--blue">
+      <strong>undo record</strong>
+      <dl class="tech-kv">
+        <div>
+          <dt>balance</dt>
+          <dd>100</dd>
+        </div>
+        <div>
+          <dt>DB_TRX_ID</dt>
+          <dd>120</dd>
+        </div>
+      </dl>
+    </section>
+
+    <div class="tech-arrow" aria-label="roll ptr">
+      <span>roll ptr</span>
+    </div>
+
+    <section class="tech-node tech-node--green tech-node--small">
+      <strong>older</strong>
+      <p>更早版本</p>
+      <p>继续回溯</p>
+    </section>
+  </div>
+
+  <aside class="tech-callout">
+    <p>Read View 先检查当前版本的 trx_id；如果不可见，才沿 DB_ROLL_PTR 回到 undo log。</p>
+    <p>所以 MVCC 读的是“对当前事务可见的版本”，而不是简单读取最新值。</p>
+  </aside>
+</DiagramFrame>

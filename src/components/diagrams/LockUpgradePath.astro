@@ -1,0 +1,38 @@
+---
+import DiagramFrame from "./DiagramFrame.astro";
+
+const steps = [
+  { title: "无竞争", tone: "warm" },
+  { title: "轻量路径", tone: "blue" },
+  { title: "自旋", tone: "green" },
+  { title: "Monitor", tone: "red" },
+];
+
+const labels = ["CAS", "短竞争", "竞争持续"];
+---
+
+<DiagramFrame
+  title="锁升级不是语法升级，而是实现路径变重"
+  note="竞争越明显，JVM 越倾向于从对象头快速路径走向 ObjectMonitor。"
+  caption="日常理解时抓住主线即可：对象头快速路径、CAS 失败、自旋、膨胀到 ObjectMonitor。"
+>
+  <div class="tech-diagram__flow tech-diagram__flow--steps">
+    {
+      steps.map((step, index) => (
+        <>
+          <section class={`tech-node tech-node--${step.tone}`}>
+            <strong>{step.title}</strong>
+          </section>
+          {index < steps.length - 1 && (
+            <div class={`tech-arrow ${index === 2 ? "tech-arrow--danger" : ""}`} aria-label={labels[index]}>
+              <span>{labels[index]}</span>
+            </div>
+          )}
+        </>
+      ))
+    }
+  </div>
+  <aside class="tech-callout">
+    <p>JDK 8 资料里常把“偏向锁”放在无竞争优化里；JDK 15 之后默认不要再把它当成前提。</p>
+  </aside>
+</DiagramFrame>

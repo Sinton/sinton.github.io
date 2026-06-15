@@ -1,0 +1,176 @@
+---
+import chinaMap from "@/data/china.geo.json";
+import { travelFootprints, visitedProvinceNames } from "@/data/travelFootprints";
+
+const mapJson = JSON.stringify(chinaMap);
+const pointsJson = JSON.stringify(travelFootprints);
+const visitedJson = JSON.stringify(visitedProvinceNames);
+---
+
+<figure class="footprint-panel footprint-panel--echarts">
+  <div class="footprint-panel__header">
+    <span>地图</span>
+    <div>
+      <small>足迹版图</small>
+      <h2>走过的地方</h2>
+      <p>红色足迹可翻阅远行记。</p>
+    </div>
+  </div>
+  <div class="footprint-map footprint-map--echarts" data-footprint-echarts role="img" aria-label="中国旅行足迹精准地图"></div>
+  <script is:inline type="application/json" data-footprint-map-json set:html={mapJson}></script>
+  <script is:inline type="application/json" data-footprint-points-json set:html={pointsJson}></script>
+  <script is:inline type="application/json" data-footprint-visited-json set:html={visitedJson}></script>
+</figure>
+
+<script>
+  import { EffectScatterChart } from "echarts/charts";
+  import { GeoComponent, TooltipComponent } from "echarts/components";
+  import * as echarts from "echarts/core";
+  import { CanvasRenderer } from "echarts/renderers";
+
+  echarts.use([
+    CanvasRenderer,
+    EffectScatterChart,
+    GeoComponent,
+    TooltipComponent,
+  ]);
+
+  type FootprintPoint = {
+    place: string;
+    provinceShort: string;
+    lng: number;
+    lat: number;
+    href: string;
+    subPlaces?: string[];
+  };
+
+  type ChinaMapFeature = {
+    properties: {
+      name: string;
+    };
+  };
+
+  type ChinaMapJson = {
+    features: ChinaMapFeature[];
+  };
+
+  type EchartsParams = {
+    seriesType?: string;
+    name?: string;
+    data?: (FootprintPoint & { value?: [number, number, number] }) | null;
+  };
+
+  document.querySelectorAll<HTMLElement>("[data-footprint-echarts]").forEach((chartEl) => {
+    const panel = chartEl.closest(".footprint-panel");
+    const isDrawerMap = Boolean(chartEl.closest(".footprint-drawer__map"));
+    const mapJsonEl = panel?.querySelector<HTMLScriptElement>("[data-footprint-map-json]");
+    const pointsJsonEl = panel?.querySelector<HTMLScriptElement>("[data-footprint-points-json]");
+    const visitedJsonEl = panel?.querySelector<HTMLScriptElement>("[data-footprint-visited-json]");
+
+    if (!mapJsonEl?.textContent || !pointsJsonEl?.textContent || !visitedJsonEl?.textContent) {
+      return;
+    }
+
+    const chinaMap = JSON.parse(mapJsonEl.textContent) as ChinaMapJson;
+    const points = JSON.parse(pointsJsonEl.textContent) as FootprintPoint[];
+    const visited = new Set<string>(JSON.parse(visitedJsonEl.textContent) as string[]);
+
+    echarts.registerMap("china-footprint", chinaMap as Parameters<typeof echarts.registerMap>[1]);
+    const chart = echarts.init(chartEl, null, { renderer: "canvas" });
+    chart.setOption({
+      backgroundColor: "transparent",
+      tooltip: {
+        trigger: "item",
+        borderWidth: 1,
+        borderColor: "#4c4031",
+        backgroundColor: "rgba(248,239,220,0.96)",
+        textStyle: {
+          color: "#17130f",
+          fontFamily: "Kaiti SC, STKaiti, KaiTi, serif",
+        },
+        formatter(params: EchartsParams) {
+          if (params.seriesType === "effectScatter") {
+            const data = params.data;
+            if (!data) return "";
+            const extras = data.subPlaces?.length ? `<br/>顺路记下：${data.subPlaces.join(" / ")}` : "";
+            return `<strong>${data.place}</strong><br/>${data.provinceShort}${extras}<br/><span style="color:#9e2f24">点击翻阅远行记</span>`;
+          }
+          const name = params.name ?? "";
+          return visited.has(name) ? `${name}<br/>已有远行记录` : name;
+        },
+      },
+      geo: {
+        map: "china-footprint",
+        roam: false,
+        // The source GeoJSON is about 1.228:1; this keeps the rendered outline close to 1:1.
+        aspectScale: 0.815,
+        zoom: isDrawerMap ? 1 : 1.06,
+        top: isDrawerMap ? 18 : 24,
+        right: isDrawerMap ? 14 : 16,
+        bottom: isDrawerMap ? 18 : 24,
+        left: isDrawerMap ? 14 : 16,
+        itemStyle: {
+          areaColor: "rgba(248,239,220,0.48)",
+          borderColor: "#4c4031",
+          borderWidth: 0.75,
+        },
+        emphasis: {
+          label: {
+            show: false,
+          },
+          itemStyle: {
+            areaColor: "rgba(158,47,36,0.2)",
+          },
+        },
+        regions: Array.from(visited).map((name) => ({
+          name,
+          itemStyle: {
+            areaColor: "rgba(158,47,36,0.26)",
+          },
+          emphasis: {
+            itemStyle: {
+              areaColor: "rgba(158,47,36,0.34)",
+            },
+          },
+        })),
+      },
+      series: [
+        {
+          name: "旅行足迹",
+          type: "effectScatter",
+          coordinateSystem: "geo",
+          zlevel: 2,
+          symbolSize: 9,
+          rippleEffect: {
+            brushType: "stroke",
+            scale: 3.2,
+          },
+          itemStyle: {
+            color: "#9e2f24",
+            borderColor: "#f8efdc",
+            borderWidth: 1,
+          },
+          data: points.map((point) => ({
+            ...point,
+            name: point.place,
+            value: [point.lng, point.lat, 1],
+          })),
+        },
+      ],
+    });
+
+    chart.on("click", (params) => {
+      const data = (params.data ?? null) as unknown as (FootprintPoint & { href?: string }) | null;
+      if (data?.href) {
+        window.location.href = data.href;
+      }
+    });
+
+    const resizeChart = () => chart.resize();
+    window.addEventListener("resize", resizeChart);
+    document.addEventListener("astro:before-swap", () => {
+      window.removeEventListener("resize", resizeChart);
+      chart.dispose();
+    }, { once: true });
+  });
+</script>

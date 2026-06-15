@@ -1,0 +1,91 @@
+---
+import FootprintEcharts from "@/components/FootprintEcharts.astro";
+import { travelFootprints, visitedProvinceNames } from "@/data/travelFootprints";
+
+const orderedFootprints = travelFootprints;
+---
+
+<section class="footprint-drawer-shell" aria-label="足迹版图侧栏">
+  <button
+    class="footprint-drawer-trigger"
+    type="button"
+    aria-controls="travel-footprint-drawer"
+    aria-expanded="false"
+    data-footprint-drawer-open
+  >
+    <span>足迹版图</span>
+    <strong>{orderedFootprints.length} 地 / {visitedProvinceNames.length} 省区</strong>
+  </button>
+
+  <div class="footprint-drawer" id="travel-footprint-drawer" aria-hidden="true" data-footprint-drawer>
+    <button class="footprint-drawer__shade" type="button" aria-label="关闭足迹版图" data-footprint-drawer-close></button>
+    <aside class="footprint-drawer__panel" aria-label="远行足迹版图">
+      <header class="footprint-drawer__header">
+        <div>
+          <span>远行地图</span>
+          <h2>足迹版图</h2>
+        </div>
+        <button type="button" aria-label="关闭足迹版图" data-footprint-drawer-close>×</button>
+      </header>
+
+      <div class="footprint-drawer__stats" aria-label="旅行足迹统计">
+        <span>已记录 {orderedFootprints.length} 地</span>
+        <span>覆盖 {visitedProvinceNames.length} 个省区</span>
+      </div>
+
+      <div class="footprint-drawer__map">
+        <FootprintEcharts />
+      </div>
+
+      <nav class="footprint-drawer__places" aria-label="已记录的地方">
+        <div class="section-kicker">已记录的地方</div>
+        <div>
+          {
+            orderedFootprints.map((item, index) => (
+              <a href={item.href}>
+                <span>{String(index + 1).padStart(2, "0")}</span>
+                <strong>{item.place}</strong>
+                <small>
+                  {item.provinceShort}
+                  {item.subPlaces?.length ? ` / ${item.subPlaces.join(" / ")}` : ""}
+                </small>
+              </a>
+            ))
+          }
+        </div>
+      </nav>
+    </aside>
+  </div>
+</section>
+
+<script>
+  const drawer = document.querySelector<HTMLElement>("[data-footprint-drawer]");
+  const openButton = document.querySelector<HTMLButtonElement>("[data-footprint-drawer-open]");
+  const closeButtons = document.querySelectorAll<HTMLButtonElement>("[data-footprint-drawer-close]");
+
+  const resizeFootprintMap = () => {
+    window.dispatchEvent(new Event("resize"));
+  };
+
+  const openDrawer = () => {
+    drawer?.classList.add("is-open");
+    drawer?.setAttribute("aria-hidden", "false");
+    openButton?.setAttribute("aria-expanded", "true");
+    window.setTimeout(resizeFootprintMap, 60);
+    window.setTimeout(resizeFootprintMap, 360);
+  };
+
+  const closeDrawer = () => {
+    drawer?.classList.remove("is-open");
+    drawer?.setAttribute("aria-hidden", "true");
+    openButton?.setAttribute("aria-expanded", "false");
+  };
+
+  openButton?.addEventListener("click", openDrawer);
+  closeButtons.forEach((button) => button.addEventListener("click", closeDrawer));
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && drawer?.classList.contains("is-open")) {
+      closeDrawer();
+    }
+  });
+</script>

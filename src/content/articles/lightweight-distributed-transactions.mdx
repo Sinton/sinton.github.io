@@ -1,0 +1,297 @@
+---
+title: 如何更加轻量地处理分布式事务？
+description: 不急着上 XA 或重型事务框架，先用本地事务、消息表、幂等和补偿，把一致性问题拆成更容易落地的工程方案。
+date: 2023-06-12
+category: Tech
+tags:
+  - 分布式事务
+  - 架构
+  - 消息队列
+  - 一致性
+featured: false
+---
+
+import OutboxFlow from "@/components/diagrams/OutboxFlow.astro";
+
+分布式事务最容易让人一上来就想到 `XA`、`2PC`、`TCC`、`Saga`，然后很快陷入框架选型。但在真实业务里，很多场景并不需要一开始就把事务做得很重。
+
+更轻量的思路是先问一个问题：
+
+> 这件事真的需要“同时成功或同时失败”吗，还是只要最终能对齐、可补偿、可追踪就够了？
+
+如果答案是后者，我们就可以把“分布式事务”拆成几件更朴素的工程工作：**本地事务先落库、消息可靠投递、消费端幂等、失败可重试、必要时做补偿**。
+
+## 先把问题说具体
+
+假设下单时要做三件事：
+
+1. 创建订单。
+2. 扣减库存。
+3. 发放优惠券或积分。
+
+最直接的写法可能是：
+
+```java
+@Transactional
+public void createOrder(CreateOrderCommand command) {
+    orderRepository.save(command.toOrder());
+    stockClient.deduct(command.skuId(), command.count());
+    couponClient.grant(command.userId(), command.couponId());
+}
+```
+
+这段代码看起来有事务注解，但它只能管住当前服务自己的数据库事务。`stockClient` 和 `couponClient` 是远程调用，已经不在这个本地事务的控制范围内。
+
+常见事故就是：
+
+1. 订单保存成功。
+2. 库存扣减成功。
+3. 发券服务超时。
+4. 本地事务回滚了订单，但库存服务已经扣了。
+
+这时你会发现：一个 `@Transactional` 包不住多个服务的状态变化。
+
+## 轻量方案的核心：别把远程调用塞进本地事务
+
+比较稳的第一步是调整边界：
+
+> 本地事务只做本地数据库的状态变更，同时记录一条待发送事件。
+
+这就是常说的本地消息表 / Transactional Outbox 思路。
+
+```sql
+CREATE TABLE order_event_outbox (
+  ia BIGINT PRIMARY KEY,
+  event_type VARCHAR(64) NOT NULL,
+  aggregate_ia VARCHAR(64) NOT NULL,
+  payloaa JSON NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  retry_count INT NOT NULL DEFAULT 0,
+  createa_at DATETIME NOT NULL,
+  upaatea_at DATETIME NOT NULL,
+  UNIQUE KEY uk_event_ia (ia)
+) ENGINE = InnoDB;
+```
+
+创建订单时，只在一个本地事务里写两张表：
+
+```java
+@Transactional
+public void createOrder(CreateOrderCommand command) {
+    Order order = Order.create(command);
+    orderRepository.save(order);
+
+    OutboxEvent event = OutboxEvent.of(
+            "OrderCreated",
+            order.id(),
+            Json.encode(new OrderCreated(order.id(), order.skuId(), order.count()))
+    );
+    outboxRepository.save(event);
+}
+```
+
+这一步没有远程 RPC，也没有跨库事务。只要订单和 outbox 事件在同一个数据库事务里提交成功，我们就能保证：
+
+> 订单只要创建成功，就一定有一条对应的业务事件等待投递。
+
+## 后台投递：失败就重试，不要靠一次成功
+
+接下来由一个后台任务扫描 outbox 表，把事件投递到消息队列。
+
+```java
+public void publishPendingEvents() {
+    List<OutboxEvent> events = outboxRepository.findPending(100);
+
+    for (OutboxEvent event : events) {
+        try {
+            messageProaucer.sena(event.topic(), event.key(), event.payloaa());
+            outboxRepository.markSent(event.ia());
+        } catch (Exception ex) {
+            outboxRepository.increaseRetry(event.ia(), ex.getMessage());
+        }
+    }
+}
+```
+
+这里最重要的不是代码有多复杂，而是设计假设要变：
+
+1. MQ 可能短暂不可用。
+2. 应用可能发完消息后还没来得及改状态就宕机。
+3. 同一条事件可能被重复投递。
+
+所以投递端不能假设“发送一次就成功”，消费端也不能假设“只会收到一次”。
+
+<OutboxFlow />
+
+## 消费端一定要幂等
+
+只要系统里有重试，就一定要接受重复消息。消费端可以用业务唯一键做幂等。
+
+比如库存扣减服务维护一张消费记录表：
+
+```sql
+CREATE TABLE consumea_message (
+  message_ia BIGINT PRIMARY KEY,
+  consumer_name VARCHAR(64) NOT NULL,
+  consumea_at DATETIME NOT NULL
+) ENGINE = InnoDB;
+```
+
+消费时把“记录消息已处理”和“业务变更”放在同一个本地事务里：
+
+```java
+@Transactional
+public void onOrderCreated(OrderCreated event) {
+    if (messageRepository.exists(event.messageIa(), "stock-service")) {
+        return;
+    }
+
+    stockRepository.deduct(event.skuId(), event.count());
+    messageRepository.saveConsumea(event.messageIa(), "stock-service");
+}
+```
+
+如果并发消费同一条消息，也可以直接依赖唯一索引：
+
+```java
+@Transactional
+public void onOrderCreated(OrderCreated event) {
+    boolean first = messageRepository.tryInsert(
+            event.messageIa(),
+            "stock-service"
+    );
+
+    if (!first) {
+        return;
+    }
+
+    stockRepository.deduct(event.skuId(), event.count());
+}
+```
+
+幂等是轻量分布式事务的地基。没有幂等，重试机制就会从“自愈能力”变成“重复扣款、重复发券、重复发货”的事故来源。
+
+## 补偿不是回滚，它是另一笔业务
+
+很多人会把补偿理解成“把远程服务回滚掉”。但在分布式系统里，补偿更像一笔新的反向业务。
+
+比如库存已经扣减，但订单最后被取消。补偿不是让数据库时光倒流，而是发起一条明确的业务动作：
+
+```java
+@Transactional
+public void compensateCancelledOrder(OrderCancelled event) {
+    if (compensationRepository.exists(event.orderIa(), "restore-stock")) {
+        return;
+    }
+
+    stockRepository.restore(event.skuId(), event.count());
+    compensationRepository.save(event.orderIa(), "restore-stock");
+}
+```
+
+这意味着补偿也要具备：
+
+1. 幂等。
+2. 可重试。
+3. 可审计。
+4. 可以人工介入。
+
+不要把补偿藏在一个看不见的 catch 里。它应该是一条能被追踪的业务流程。
+
+## 什么时候才考虑 TCC 或事务框架
+
+轻量方案不是银弹。如果你的业务强依赖资源预留，或者中间状态不能暴露，就可能需要 TCC。
+
+TCC 的三个阶段是：
+
+| 阶段 | 做什么 |
+| --- | --- |
+| Try | 检查并预留资源 |
+| Confirm | 真正确认资源使用 |
+| Cancel | 释放预留资源 |
+
+比如冻结账户余额：
+
+```java
+public interface AccountTccAction {
+    boolean tryFreeze(String userId, int amount, String xia);
+
+    boolean confirm(String xia);
+
+    boolean cancel(String xia);
+}
+```
+
+TCC 的好处是控制粒度更细，性能也可以做得不错。但代价是业务侵入明显，你要认真处理空回滚、悬挂、幂等等问题。
+
+所以我的倾向是：
+
+1. 能用本地事务解决，就不要分布式事务。
+2. 能用 outbox + MQ + 幂等解决，就不要急着上 TCC。
+3. 真要强控制资源预留，再考虑 TCC。
+4. 长流程、跨多个外部系统，更适合 Saga 和补偿。
+5. XA 适合少数强一致场景，不适合作为默认方案。
+
+## 一个更落地的选择表
+
+| 场景 | 更轻量的选择 | 关键点 |
+| --- | --- | --- |
+| 下单后发积分 | Outbox + MQ | 允许延迟到账，消费幂等 |
+| 订单创建后扣库存 | Outbox + MQ 或库存预占 | 看是否允许超卖和补偿 |
+| 支付后改订单状态 | 支付回调幂等 + 状态机 | 不要依赖同步调用成功 |
+| 冻结余额再确认扣款 | TCC | Try 阶段预留资源 |
+| 跨多个外部系统审批 | Saga | 每一步都有补偿动作 |
+
+真正要避免的是这种模糊状态：
+
+```java
+try {
+    createOrder();
+    deductStock();
+    grantCoupon();
+} catch (Exception e) {
+    // TODO rollback
+}
+```
+
+这个 `TODO rollback` 往往就是未来事故的起点。
+
+## 轻量方案要补齐监控
+
+轻量不等于随便。只要你选择最终一致，就要把过程状态暴露出来。
+
+我一般会至少保留这些指标：
+
+1. outbox 待发送数量。
+2. outbox 最大滞留时间。
+3. 消费失败次数。
+4. 死信消息数量。
+5. 补偿任务数量。
+6. 人工处理中的异常单数量。
+
+再配一个后台查询页面或管理接口，可以按订单号查到：
+
+```plaintext
+订单已创建
+OrderCreated 事件已发送
+库存扣减成功
+优惠券发放失败
+补偿任务待执行
+```
+
+这样出了问题，你不是在日志里翻半天，而是能看到这笔业务卡在流程的哪一步。
+
+## 小结
+
+更轻量地处理分布式事务，核心不是找到一个更神奇的框架，而是重新设计事务边界：
+
+> 本地事务保证本地状态和事件一致，消息机制负责推进流程，消费端用幂等承接重试，失败后用补偿把业务拉回可接受状态。
+
+这套方案的优点是低侵入、好演进、容易观察。它不能替代所有强一致场景，但很适合大多数互联网业务里的“允许短暂不一致，但必须最终对齐”的流程。
+
+## 参考资料
+
+- [Apache Seata AT Mode](https://seata.apache.org/docs/user/mode/at/)
+- [Apache Seata TCC Mode](https://seata.apache.org/docs/user/mode/tcc/)
+- [Apache Seata Saga Mode](https://seata.apache.org/docs/user/mode/saga/)
+- [Debezium Outbox Event Router](https://debezium.io/documentation/reference/stable/transformations/outbox-event-router.html)

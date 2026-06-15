@@ -1,0 +1,27 @@
+---
+import "../../styles/personal-shared.css";
+import "../../styles/personal-travel.css";
+import "../../styles/personal-footprint.css";
+import { themeConfig } from "@/theme.config";
+import { getCollection } from "astro:content";
+import BaseLayout from "astro-newspaper-theme/layouts/BaseLayout.astro";
+import EntryList from "astro-newspaper-theme/components/EntryList.astro";
+import FootprintDrawer from "@/components/FootprintDrawer.astro";
+import Masthead from "astro-newspaper-theme/components/Masthead.astro";
+import { sortByDateDesc } from "astro-newspaper-theme/lib/format";
+
+const travel = sortByDateDesc(await getCollection("travel"));
+---
+
+
+<BaseLayout title="远行记" description="旅行 Log 和路上的片段" config={themeConfig}>
+<Masthead config={themeConfig} />
+  <main class="archive-page">
+    <header class="archive-header">
+      <h1 class="section-kicker archive-header__kicker-title">远行记</h1>
+      <p>记录路上的山河、城市、天气和临时起意。每一篇都是从现场带回来的片段。</p>
+    </header>
+    <FootprintDrawer />
+    <EntryList entries={travel} basePath="/travel" label="全部远行" config={themeConfig} />
+  </main>
+</BaseLayout>

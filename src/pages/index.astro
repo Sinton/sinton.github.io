@@ -1,0 +1,298 @@
+---
+import "../styles/personal-shared.css";
+import "../styles/personal-home.css";
+import "../styles/personal-works.css";
+import { themeConfig } from "@/theme.config";
+import { getCollection } from "astro:content";
+import BaseLayout from "astro-newspaper-theme/layouts/BaseLayout.astro";
+import Masthead from "astro-newspaper-theme/components/Masthead.astro";
+import StampTag from "astro-newspaper-theme/components/StampTag.astro";
+import WorkCard from "astro-newspaper-theme/components/WorkCard.astro";
+import { sortByDateDesc } from "astro-newspaper-theme/lib/format";
+
+const works = (await getCollection("works")).sort(
+  (a, b) => a.data.order - b.data.order,
+);
+const workSlug = (id: string) => id.replace(/\/index$/, "");
+const workScreenshotImages = import.meta.glob(
+  "/src/content/works/*/screenshots/*.{png,jpg,jpeg,webp}",
+  { eager: true, import: "default" },
+) as Record<string, { src: string; width: number; height: number }>;
+const allArticles = sortByDateDesc(await getCollection("articles"));
+const allTravel = sortByDateDesc(await getCollection("travel"));
+
+const leadWork = works.find((work) => work.data.featured) ?? works[0];
+const getWorkLeadImage = (work: (typeof works)[number]) => {
+  const screenshot =
+    work.data.screenshots.find((item) => item.featured) ?? work.data.screenshots[0];
+
+  if (!screenshot) {
+    return undefined;
+  }
+
+  const image =
+    workScreenshotImages[
+      `/src/content/works/${workSlug(work.id)}/screenshots/${screenshot.src}`
+    ];
+
+  return image
+    ? {
+        ...image,
+        alt: screenshot.alt,
+        title: screenshot.title,
+        caption: screenshot.caption,
+      }
+    : undefined;
+};
+const leadWorkImage = getWorkLeadImage(leadWork);
+const otherWorks = works.filter((work) => work.id !== leadWork.id);
+const selectedWorks = otherWorks.slice(0, 3);
+const selectionLeadWork = selectedWorks[0];
+const selectionMoreWorks = selectedWorks.slice(1, 3);
+const pendingWorks = otherWorks.slice(3);
+const selectedArticles = allArticles.slice(0, 1);
+const selectedTravel = allTravel.slice(0, 1);
+const workHighlights: Record<string, string[]> = {
+  mymusic: [
+    "网易云、QQ 音乐、汽水音乐等资源统一整理",
+    "把搜索、歌单、队列和播放入口收进一个日常播放台",
+    "优先服务个人听歌习惯，而不是再做一个重型客户端",
+  ],
+  myalarm: ["围绕起床、提醒和日常节奏做轻量工具", "把闹钟从单一提醒变成可复盘的生活节点"],
+  mysleep: ["白噪音、专注和睡前场景放在同一个安静入口", "减少复杂操作，保留能长期使用的助眠体验"],
+};
+const statusLabels: Record<string, string> = {
+  Active: "持续维护",
+  Planning: "规划中",
+  Draft: "草稿中",
+};
+const selectionLeadHighlights = selectionLeadWork
+  ? (workHighlights[workSlug(selectionLeadWork.id)] ?? [
+      selectionLeadWork.data.subtitle,
+      selectionLeadWork.data.deck,
+      `${selectionLeadWork.data.platform} 平台方向持续整理`,
+    ])
+  : [];
+const latestUpdates = [
+  ...allArticles.slice(0, 3).map((entry) => ({
+    href: `/articles/${entry.id}/`,
+    kind: "随笔",
+    title: entry.data.title,
+    date: entry.data.date,
+  })),
+  ...allTravel.slice(0, 2).map((entry) => ({
+    href: `/travel/${entry.id}/`,
+    kind: "远行",
+    title: entry.data.title,
+    date: entry.data.date,
+  })),
+]
+  .sort((a, b) => b.date.getTime() - a.date.getTime())
+  .slice(0, 3);
+const formatDigestDate = (date: Date) =>
+  new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    timeZone: "Asia/Shanghai",
+  }).format(date);
+---
+
+
+<BaseLayout title={themeConfig.siteTitle} description={themeConfig.description} config={themeConfig}>
+<Masthead config={themeConfig} />
+
+  <main>
+    <section class="front-page">
+      <div class="front-page__lead">
+        <div class="front-page__banner">头版调查</div>
+        <WorkCard
+          href={`/works/${workSlug(leadWork.id)}/`}
+          title={leadWork.data.title}
+          subtitle={leadWork.data.subtitle}
+          deck={leadWork.data.deck}
+          category={leadWork.data.category}
+          year={leadWork.data.year}
+          platform={leadWork.data.platform}
+          accent={leadWork.data.accent}
+          variant="lead"
+          image={leadWorkImage}
+        />
+      </div>
+
+      <aside class="front-page__briefs front-page__rail">
+        <StampTag label="站点概览" tone="red" />
+        <div class="briefs__header">
+          <h1>一份持续更新的个人晚报。</h1>
+        </div>
+        <div class="briefs__index">
+          <a href="/works/">
+            <strong>{works.length}</strong>
+            <span>作品存档</span>
+          </a>
+          <a href="/articles/">
+            <strong>{allArticles.length}</strong>
+            <span>随笔刊载</span>
+          </a>
+          <a href="/travel/">
+            <strong>{allTravel.length}</strong>
+            <span>远行记录</span>
+          </a>
+        </div>
+        <div class="briefs__updates">
+          <h2>最近更新</h2>
+          <ul>
+            {
+              latestUpdates.map((entry) => (
+                <li>
+                  <a href={entry.href}>
+                    <span>
+                      {formatDigestDate(entry.date)} / {entry.kind}
+                    </span>
+                    <strong>{entry.title}</strong>
+                  </a>
+                </li>
+              ))
+            }
+            </ul>
+        </div>
+        <div class="briefs__note">
+          <h2>阿通手记</h2>
+          <p>每次更新都尽量留下一点现场：做了什么、为什么做，以及后来回头看见了什么。</p>
+        </div>
+      </aside>
+    </section>
+
+    <section class="front-selection" aria-label="本期选登">
+      <div class="section-heading front-selection__heading">
+        <span class="section-kicker">本期选登</span>
+      </div>
+
+      <div class="front-selection__grid">
+        <article class="selection-column selection-column--works">
+          <div class="selection-column__header">
+            <StampTag label="作品选登" tone="red" />
+            <a href="/works/">翻阅作品刊</a>
+          </div>
+          <div class="selection-work-layout">
+            <div class="selection-work-feature">
+              {
+                selectionLeadWork && (
+                  <a href={`/works/${workSlug(selectionLeadWork.id)}/`}>
+                    <span>
+                      {selectionLeadWork.data.year} / {selectionLeadWork.data.platform}
+                    </span>
+                    <h2>{selectionLeadWork.data.title}</h2>
+                    <strong>{selectionLeadWork.data.subtitle}</strong>
+                    <p>{selectionLeadWork.data.deck}</p>
+                  </a>
+                )
+              }
+              {
+                selectionLeadWork && (
+                  <div class="selection-work-extra">
+                    <section>
+                      <h3>本期看点</h3>
+                      <ul>
+                        {selectionLeadHighlights.map((item) => (
+                          <li>{item}</li>
+                        ))}
+                      </ul>
+                    </section>
+                    <section>
+                      <h3>档案信息</h3>
+                      <dl>
+                        <div>
+                          <dt>状态</dt>
+                          <dd>{statusLabels[selectionLeadWork.data.status] ?? selectionLeadWork.data.status}</dd>
+                        </div>
+                        <div>
+                          <dt>技术</dt>
+                          <dd>{selectionLeadWork.data.stack.slice(0, 3).join(" / ")}</dd>
+                        </div>
+                        <div>
+                          <dt>版次</dt>
+                          <dd>{selectionLeadWork.data.year} / {selectionLeadWork.data.platform}</dd>
+                        </div>
+                      </dl>
+                    </section>
+                  </div>
+                )
+              }
+            </div>
+            <div class="selection-work-briefs">
+              <h3>同版短讯</h3>
+              {
+                selectionMoreWorks.map((work) => (
+                  <a href={`/works/${workSlug(work.id)}/`}>
+                    <span>{work.data.year} / {work.data.platform}</span>
+                    <strong>{work.data.title}</strong>
+                    <small>{work.data.subtitle}</small>
+                  </a>
+                ))
+              }
+              {
+                pendingWorks.length > 0 && (
+                  <div class="selection-pending">
+                    <h4>余稿待刊</h4>
+                    <ul>
+                      {pendingWorks.map((work) => (
+                        <li>
+                          <a href={`/works/${workSlug(work.id)}/`}>
+                            <strong>{work.data.title}</strong>
+                            <span>{work.data.subtitle}</span>
+                          </a>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )
+              }
+            </div>
+          </div>
+        </article>
+
+        <article class="selection-column selection-column--reading">
+          <section class="selection-reading-block">
+            <div class="selection-column__header">
+              <StampTag label="随笔选读" tone="blue" />
+              <a href="/articles/">翻阅随笔栏</a>
+            </div>
+            <ul class="selection-list">
+              {
+                selectedArticles.map((article) => (
+                  <li>
+                    <a href={`/articles/${article.id}/`}>
+                      <span>{formatDigestDate(article.data.date)} / 随笔</span>
+                      <strong>{article.data.title}</strong>
+                      <p>{article.data.description}</p>
+                    </a>
+                  </li>
+                ))
+              }
+            </ul>
+          </section>
+
+          <section class="selection-reading-block selection-reading-block--travel">
+            <div class="selection-column__header">
+              <StampTag label="远行选记" tone="green" />
+              <a href="/travel/">翻阅远行记</a>
+            </div>
+            <ul class="selection-list selection-list--compact">
+              {
+                selectedTravel.map((item) => (
+                  <li>
+                    <a href={`/travel/${item.id}/`}>
+                      <span>{formatDigestDate(item.data.date)} / {item.data.location}</span>
+                      <strong>{item.data.title}</strong>
+                      <p>{item.data.description}</p>
+                    </a>
+                  </li>
+                ))
+              }
+            </ul>
+          </section>
+        </article>
+      </div>
+    </section>
+  </main>
+</BaseLayout>

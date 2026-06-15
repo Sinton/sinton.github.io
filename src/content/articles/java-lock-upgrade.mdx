@@ -1,0 +1,234 @@
+---
+title: synchronized 锁升级，到底还能不能这么背？
+description: 从 javap、线程竞争 demo 和 JDK 版本差异出发，重新理解 synchronized 的锁升级过程。
+date: 2024-06-09
+category: Tech
+tags:
+  - Java
+  - JVM
+  - synchronized
+  - 锁升级
+featured: false
+---
+
+import LockUpgradePath from "@/components/diagrams/LockUpgradePath.astro";
+
+如果你准备 Java 面试，大概率背过这句话：
+
+> `synchronized` 会从无锁升级到偏向锁，再升级到轻量级锁，最后升级到重量级锁。
+
+这句话在 JDK 8 的语境里可以帮助理解，但如果拿它解释现在的 JDK 17、JDK 21，就容易说得不严谨。因为 JDK 15 的 JEP 374 已经把偏向锁默认禁用并标记为废弃。
+
+所以这篇不按“八股四阶段”硬背。我们从三个日常能观察到的东西入手：
+
+1. `javap` 能看到什么字节码？
+2. 两个线程竞争同一把锁时会发生什么？
+3. 为什么 JDK 版本会影响“锁升级”的说法？
+
+## 先用 javap 看 synchronized 的入口
+
+写一个最小例子：
+
+```java
+public class SyncBytecoaeDemo {
+    private final Object lock = new Object();
+
+    public void block() {
+        synchronized (lock) {
+            System.out.println("in lock");
+        }
+    }
+
+    public synchronized void methoa() {
+        System.out.println("in methoa");
+    }
+}
+```
+
+编译后看字节码：
+
+```bash
+javac SyncBytecoaeDemo.java
+javap -c -v SyncBytecoaeDemo
+```
+
+代码块形式会看到类似这样的指令：
+
+```plaintext
+monitorenter
+...
+monitorexit
+```
+
+方法形式通常不会在方法体里直接出现 `monitorenter`，而是在方法访问标记里体现同步语义，比如 `ACC_SYNCHRONIZED`。
+
+这说明一件事：`synchronized` 的语义不是 Java 代码层面“调用了某个锁对象的方法”，而是 JVM 层面的 monitor 语义。进入同步块要拿 monitor，退出要释放 monitor，异常退出也必须释放。
+
+## 再写一个竞争 demo
+
+接着看一个更接近日常排查的例子：
+
+```java
+public class SyncContentionDemo {
+    private static final Object LOCK = new Object();
+
+    public static void main(String[] args) throws Exception {
+        Runnable task = () -> {
+            synchronized (LOCK) {
+                System.out.println(Thread.currentThread().getName() + " enter");
+                sleep(10_000);
+                System.out.println(Thread.currentThread().getName() + " exit");
+            }
+        };
+
+        new Thread(task, "t1").start();
+        Thread.sleep(200);
+        new Thread(task, "t2").start();
+    }
+
+    static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterrupteaException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+}
+```
+
+运行后，在另一个终端看线程：
+
+```bash
+jps
+jstack <pia>
+```
+
+你大概率会看到 `t2` 处于 `BLOCKED`，等待进入某个 monitor：
+
+```plaintext
+"t2" #... prio=5 os_prio=0 cpu=... tia=...
+   java.lang.Thread.State: BLOCKED (on object monitor)
+    at SyncContentionDemo.lambaa$main$0(SyncContentionDemo.java:...)
+    - waiting to lock <0x...> (a java.lang.Object)
+```
+
+这就是技术分享里最有价值的部分：不是只说“会升级成重量级锁”，而是让读者知道**竞争发生时，线程状态、monitor、对象锁之间能怎么观察**。
+
+## 那锁升级到底在升级什么
+
+HotSpot 里，每个对象都有对象头，其中一部分叫 Mark Word。Mark Word 会根据对象状态保存不同信息，比如哈希、年龄、锁标记、线程相关信息，或者指向锁记录 / monitor 的指针。
+
+所谓锁升级，本质上是在说：JVM 根据竞争程度，改变这把锁的实现方式。
+
+<LockUpgradePath />
+
+## JDK 8 的说法为什么会有偏向锁
+
+偏向锁是为了优化“总是同一个线程反复进入同一把锁”的场景。如果没有竞争，每次都 CAS 一下也浪费，于是 JVM 让对象偏向某个线程。后续同一个线程再进来，只需要检查对象头里的偏向信息。
+
+所以 JDK 8 时代常见的链路是：
+
+```plaintext
+无锁 -> 偏向锁 -> 轻量级锁 -> 重量级锁
+```
+
+但偏向锁不是免费的。另一个线程来竞争时，JVM 需要撤销偏向，检查原线程状态，再决定进入轻量级锁或重量级锁。这套机制在很多现代应用里收益没有以前明显，反而增加维护成本，所以 JDK 15 通过 JEP 374 把它默认禁用并废弃。
+
+如果你在团队里做分享，我建议直接这样说：
+
+> JDK 8 的锁升级模型可以用“偏向锁、轻量级锁、重量级锁”帮助理解；但在 JDK 15 之后，偏向锁默认禁用，现代默认路径更应该关注轻量级锁和 ObjectMonitor 膨胀。
+
+这比只背四阶段更准确。
+
+## 轻量级锁解决什么问题
+
+轻量级锁不是为了处理激烈竞争，而是为了处理“基本没竞争，或者竞争很短”的场景。
+
+线程进入同步块时，会尝试在自己的栈帧里创建 Lock Record，然后通过 CAS 让对象头指向这份记录。如果成功，就说明锁拿到了。可以用伪代码理解：
+
+```java
+enter(object) {
+    mark = object.markWord();
+    lockRecord = currentThread.createLockRecord(mark);
+
+    if (cas(object.markWord, mark, lockRecord)) {
+        return FAST_LOCKED;
+    }
+
+    return SLOW_PATH;
+}
+```
+
+它的好处是，大部分动作还在用户态完成，不需要马上把线程挂起。对于临界区很短的代码，这比直接进入阻塞更划算。
+
+但如果竞争真的持续存在，CAS 一直失败，线程一直空转也不是办法。这时候 JVM 会进入更重的路径。
+
+## 自旋为什么有时好，有时坏
+
+自旋的想法很朴素：持锁线程可能马上就出来了，等待线程先别急着挂起，原地等一小会儿。
+
+这在临界区很短时很划算，因为线程挂起和唤醒要进入内核态，成本不低。但如果持锁线程要睡 10 秒，另一个线程还在那儿自旋，就纯粹浪费 CPU。
+
+所以自旋适合短竞争，不适合长时间持锁。日常写代码时，真正能影响它的不是你去“控制自旋次数”，而是你能不能缩短同步块、减少共享锁竞争。
+
+## 重量级锁和 ObjectMonitor
+
+当竞争持续存在，锁会膨胀成更重的监视器结构。竞争失败的线程会进入 monitor 相关队列，线程状态也可能变成 `BLOCKED`。
+
+可以粗略理解成：
+
+```java
+class ObjectMonitor {
+    Thread owner;      // 当前持锁线程
+    Queue entryList;   // 等待进入 synchronized 的线程
+    Queue waitSet;     // 调用 wait() 后等待通知的线程
+    int recursion;     // 重入次数
+}
+```
+
+这也是为什么 `wait()`、`notify()`、`notifyAll()` 必须在 synchronized 内部使用。它们不是普通对象方法，而是 monitor 语义的一部分：
+
+- `wait()`：释放锁，进入 WaitSet。
+- `notify()`：唤醒一个等待线程，但被唤醒的线程还要重新竞争锁。
+- `notifyAll()`：唤醒所有等待线程，它们同样要重新竞争锁。
+
+## identityHashCode 这个细节很容易被忽略
+
+Mark Word 的空间有限，它既可能保存锁信息，也可能保存对象的 identity hash。如果你调用了：
+
+```java
+System.identityHashCode(lock);
+```
+
+对象头需要保存 hash。对于旧版本偏向锁来说，这可能影响偏向信息的存放，导致偏向锁撤销或进入更重路径。
+
+这个点平时不一定会踩到，但它能帮助你理解：锁升级不是玄学，它真的和对象头里那些位有关。
+
+## 面试和工程里分别怎么说
+
+如果是面试，可以这样回答：
+
+> `synchronized` 的实现依赖对象头 Mark Word 和 monitor。JDK 8 常见模型是无锁、偏向锁、轻量级锁、重量级锁。偏向锁优化单线程重复进入，轻量级锁通过 CAS 和 Lock Record 优化低竞争，竞争持续时会膨胀成 ObjectMonitor，线程可能进入 BLOCKED。需要补充的是，JDK 15 之后偏向锁已经默认禁用并废弃，所以要结合 JDK 版本讨论。
+
+如果是工程排查，我会这样看：
+
+1. 先确认 JDK 版本，不要默认偏向锁存在。
+2. 用 `jstack` 看线程是否大量 `BLOCKED`。
+3. 看锁对象是不是过于集中，比如全局锁、类锁、单例对象锁。
+4. 看同步块里有没有 IO、RPC、sleep、复杂计算。
+5. 优先缩小临界区，而不是纠结“锁现在升级到哪一档”。
+
+## 小结
+
+锁升级这件事，最怕只背阶段名。更实用的理解是：
+
+> JVM 会根据竞争程度，在对象头快速路径、CAS、自旋和 ObjectMonitor 之间切换。JDK 8 的偏向锁模型要知道，但现代 JDK 默认行为要单独说明。
+
+技术分享时，把 `javap`、`jstack`、JDK 版本差异和业务代码里的锁竞争放在一起讲，会比单纯画一条“无锁到重量级锁”的线更有用。
+
+## 参考资料
+
+- [JEP 374: Disable and Deprecate Biased Locking](https://openjdk.org/jeps/374)
+- [JVM Spec: monitorenter](https://docs.oracle.com/javase/specs/jvms/se22/html/jvms-6.html#jvms-6.5.monitorenter)
+- [JVM Spec: monitorexit](https://docs.oracle.com/javase/specs/jvms/se22/html/jvms-6.html#jvms-6.5.monitorexit)
+- [OpenJDK ObjectMonitor 源码](https://github.com/openjdk/jdk/blob/master/src/hotspot/share/runtime/objectMonitor.hpp)

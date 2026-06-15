@@ -1,0 +1,31 @@
+---
+interface Props {
+  eyebrow?: string;
+  title: string;
+  note: string;
+  caption: string;
+  variant?: "default" | "compact";
+}
+
+const {
+  eyebrow = "图一",
+  title,
+  note,
+  caption,
+  variant = "compact",
+} = Astro.props;
+---
+
+<figure class={`article-diagram article-diagram--${variant} tech-diagram`}>
+  <div class="tech-diagram__panel">
+    <header class="tech-diagram__header">
+      <span>{eyebrow}</span>
+      <div>
+        <h3>{title}</h3>
+        <p>{note}</p>
+      </div>
+    </header>
+    <slot />
+  </div>
+  <figcaption>{caption}</figcaption>
+</figure>

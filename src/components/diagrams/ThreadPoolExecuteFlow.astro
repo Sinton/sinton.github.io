@@ -1,0 +1,38 @@
+---
+import DiagramFrame from "./DiagramFrame.astro";
+
+const steps = [
+  { title: "核心线程", tone: "warm" },
+  { title: "任务队列", tone: "blue" },
+  { title: "非核心线程", tone: "green" },
+  { title: "拒绝策略", tone: "red" },
+];
+
+const labels = ["core 满", "queue 满", "max 满"];
+---
+
+<DiagramFrame
+  title="execute() 的真实优先级"
+  note="不是“先扩容”，而是“核心线程不够才建，核心满了先排队，队列满了才扩容”。"
+  caption="这张图就是线程池配置最容易踩坑的地方：扩容发生在“队列放不下”之后。"
+>
+  <div class="tech-diagram__flow tech-diagram__flow--steps">
+    {
+      steps.map((step, index) => (
+        <>
+          <section class={`tech-node tech-node--${step.tone}`}>
+            <strong>{step.title}</strong>
+          </section>
+          {index < steps.length - 1 && (
+            <div class={`tech-arrow ${index === 2 ? "tech-arrow--danger" : ""}`} aria-label={labels[index]}>
+              <span>{labels[index]}</span>
+            </div>
+          )}
+        </>
+      ))
+    }
+  </div>
+  <aside class="tech-callout">
+    <p>调参时先看队列类型。队列不满，maximumPoolSize 通常不会参与。</p>
+  </aside>
+</DiagramFrame>
