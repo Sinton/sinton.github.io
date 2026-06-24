@@ -1,29 +1,68 @@
-name: Deploy
+name: Deploy to GitHub Pages
 
 on:
   push:
     branches:
       - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout personal blog
+        uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v3
+          path: sinton.github.io
+
+      - name: Checkout theme
+        uses: actions/checkout@v4
         with:
-          node-version: 14.21.3
-          cache: yarn
-      - run: yarn install --frozen-lockfile
+          repository: Sinton/MyBlog
+          path: MyBlog
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.8.0
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: sinton.github.io/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: sinton.github.io
+        run: pnpm install --frozen-lockfile
 
       - name: Build
-        run: yarn docs:build
+        working-directory: sinton.github.io
+        run: pnpm build
 
-      - name: Deploy
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: docs/.vitepress/dist
-          cname: www.0x1010.com
+          path: sinton.github.io/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
