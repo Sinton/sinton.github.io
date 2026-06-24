@@ -41,9 +41,15 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: sinton.github.io/pnpm-lock.yaml
+          cache-dependency-path: |
+            sinton.github.io/pnpm-lock.yaml
+            MyBlog/pnpm-lock.yaml
 
-      - name: Install dependencies
+      - name: Install theme dependencies
+        working-directory: MyBlog
+        run: pnpm install --frozen-lockfile
+
+      - name: Install blog dependencies
         working-directory: sinton.github.io
         run: pnpm install --frozen-lockfile
 
