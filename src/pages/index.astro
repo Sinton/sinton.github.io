@@ -52,26 +52,19 @@ const selectionMoreWorks = selectedWorks.slice(1, 3);
 const pendingWorks = otherWorks.slice(3);
 const selectedArticles = allArticles.slice(0, 1);
 const selectedTravel = allTravel.slice(0, 1);
-const workHighlights: Record<string, string[]> = {
-  mymusic: [
-    "网易云、QQ 音乐、汽水音乐等资源统一整理",
-    "把搜索、歌单、队列和播放入口收进一个日常播放台",
-    "优先服务个人听歌习惯，而不是再做一个重型客户端",
-  ],
-  myalarm: ["围绕起床、提醒和日常节奏做轻量工具", "把闹钟从单一提醒变成可复盘的生活节点"],
-  mysleep: ["白噪音、专注和睡前场景放在同一个安静入口", "减少复杂操作，保留能长期使用的助眠体验"],
-};
 const statusLabels: Record<string, string> = {
   Active: "持续维护",
   Planning: "规划中",
   Draft: "草稿中",
 };
 const selectionLeadHighlights = selectionLeadWork
-  ? (workHighlights[workSlug(selectionLeadWork.id)] ?? [
-      selectionLeadWork.data.subtitle,
-      selectionLeadWork.data.deck,
-      `${selectionLeadWork.data.platform} 平台方向持续整理`,
-    ])
+  ? (selectionLeadWork.data.briefs && selectionLeadWork.data.briefs.length > 0
+      ? selectionLeadWork.data.briefs
+      : [
+          selectionLeadWork.data.subtitle,
+          selectionLeadWork.data.deck,
+          `${selectionLeadWork.data.platform} 平台方向持续整理`,
+        ])
   : [];
 const latestUpdates = [
   ...allArticles.slice(0, 3).map((entry) => ({
