@@ -5,12 +5,18 @@ import { articlesSchema, projectsSchema } from "astro-newspaper-theme/lib/conten
 
 const works = defineCollection({
   loader: glob({ base: "./src/content/works", pattern: "**/*.{md,mdx}" }),
-  schema: projectsSchema,
+  schema: projectsSchema.extend({
+    // 可以在这里扩展主站专有的自定义属性，例如：
+    // githubRepo: z.string().url().optional(),
+  }),
 });
 
 const articles = defineCollection({
   loader: glob({ base: "./src/content/articles", pattern: "**/*.{md,mdx}" }),
-  schema: articlesSchema,
+  schema: articlesSchema.extend({
+    // 可以在这里扩展主站专有的自定义属性，例如：
+    // originalUrl: z.string().url().optional(),
+  }),
 });
 
 const travel = defineCollection({
